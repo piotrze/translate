@@ -1,7 +1,7 @@
 Translate
 =========
 
-This plugin provides a web interface for translating Rails I18n texts (requires Rails 3.0 or higher) from one locale to another. The plugin has been tested only with the simple I18n backend that ships with Rails. I18n texts are read from and written to YAML files under config/locales.
+This plugin provides a web interface for translating Rails I18n texts (requires Rails 3.0 or higher) from one locale to another. The plugin has been tested only with the simple I18n backend that ships with Rails. I18n texts are loaded from YAML to database, then You can edit them and export again to YAML.
 
 To translate to a new locale you need to add a YAML file for that locale that contains the locale as the top key and at least one translation.
 
@@ -21,12 +21,6 @@ Rake Tasks
 
 In addition to the web UI this plugin adds the following rake tasks:
 
-translate:untranslated
-translate:missing
-translate:remove_obsolete_keys
-translate:merge_keys
-translate:google
-translate:changed
 
 The missing task shows you any I18n keys in your code that do not have translations in the YAML file for your default locale, i.e. config/locales/sv.yml.
 
@@ -80,7 +74,5 @@ Authors
 - Milan Novota (initial Rails 3 support)
 - Roman Shterenzon (Rails 3 cleanup and gem packaging)
 - Ichiro Yamamoto
-
-Many thanks to http://newsdesk.se for sponsoring the development of this plugin.
 
 Copyright (c) 2009 Peter Marklund, released under the MIT license
