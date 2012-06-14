@@ -4,178 +4,82 @@ class TranslateController < ActionController::Base
 
   layout 'translate'
 
-  before_filter :init_translations
-  before_filter :set_locale
-
-  # GET /translate
   def index
-    initialize_keys
-    filter_by_key_pattern
-    filter_by_text_pattern
-    filter_by_translated_or_changed
-    sort_keys
-    paginate_keys
-    @total_entries = @keys.size
+    @default_locale = @current_user.staff.locales.all(:order=>"locale_id").first
+    conditions = ""
+    conditions_args = []
+    @locale =  params[:locale].present? ? params[:locale] : default_locale
+
+    conditions = "1=1"
+
+    if params[:key_pattern]
+      conditions << " AND `key` like ?"
+      conditions_args << "%#{params[:key_pattern]}%"
+    end
+    if params[:text_pattern] && !params[:text_pattern].empty?
+      conditions << " AND value like ?"
+      conditions_args << "%#{params[:text_pattern]}%"
+    end
+
+    if params[:empty_text_pattern] && !params[:empty_text_pattern].empty?
+      conditions << " AND (value is NULL or value = '')"
+    end
+
+    @translations = Translation.paginate(:conditions => [conditions, *conditions_args],
+      :order => "`key`",
+      :per_page => 10,
+      :page => params[:page])
+
   end
 
-  # POST /translate
-  def translate
-    processed_parameters = process_array_parameters(params[:key])
-    I18n.backend.store_translations(@to_locale, Translate::Keys.to_deep_hash(processed_parameters))
-    Translate::Storage.new(@to_locale).write_to_file
-    Translate::Log.new(@from_locale, @to_locale, params[:key].keys).write_to_file
-    force_init_translations # Force reload from YAML file
-    flash[:notice] = "Translations stored"
-    redirect_to params.slice(:filter, :sort_by, :key_type, :key_pattern, :text_type, :text_pattern).merge({:action => :index})
+
+  #it will destroy all translations from given key
+  def destroy
+    Translation.delete_all(["`key` = ?", params[:key]])
+    redirect_to :action => :index
   end
 
-  # GET /translate/reload
-  def reload
-    Translate::Keys.files = nil
-    redirect_to :action => 'index'
+  def multiple_update
+    locale = params[:locale]
+    count = 0
+    for key, value in params[:keys]
+      translation = Translation.find_by_key_and_locale(key, locale)
+      if translation.value != value
+        translation.update_attribute(:value, value)
+        count += 1
+      end
+    end
+    flash[:notice] = "#{count} key updated."
+    params.delete 'keys'
+    params.delete 'commit'
+    params['page'] = 1 if params['page'].blank?
+    redirect_to params.merge :action => :index
+  end
+
+  def new
+    @page_title = 'New key'
+    @translation = Translation.new()
+  end
+
+  def create
+    @translation = Translation.new(params[:translation])
+    if @translation.save
+      #create other translations
+      for locale in Locale.find(:all, :condtions => ["id != ?", @translation.locale_id])
+        t = Translation.new(params[:translation])
+        t.locale_id = locale.id
+        t.save
+      end
+
+      redirect_to :action => :index
+    else
+      render :new
+    end
   end
 
   private
-  def initialize_keys
-    @files = Translate::Keys.files
-    @keys = (@files.keys.map(&:to_s) + Translate::Keys.new.i18n_keys(@from_locale)).uniq
-    @keys.reject! do |key|
-      from_text = lookup(@from_locale, key)
-      # When translating from one language to another, make sure there is a text to translate from.
-      # The only supported formats are String and Array. We don't support other formats
-      (@from_locale != @to_locale && !from_text.present?) || (from_text.present? && !from_text.is_a?(String) && !from_text.is_a?(Array))
-    end
-  end
-
-  def lookup(locale, key)
-    I18n.backend.send(:lookup, locale, key)
-  end
-  helper_method :lookup
-
-  def filter_by_translated_or_changed
-    params[:filter] ||= 'all'
-    return if params[:filter] == 'all'
-    @keys.reject! do |key|
-      case params[:filter]
-      when 'untranslated'
-        lookup(@to_locale, key).present?
-      when 'translated'
-        lookup(@to_locale, key).blank?
-      when 'changed'
-        old_from_text(key).blank? || lookup(@from_locale, key) == old_from_text(key)
-      else
-        raise "Unknown filter '#{params[:filter]}'"
-      end
-    end
-  end
-
-  def filter_by_key_pattern
-    return if params[:key_pattern].blank?
-    @keys.reject! do |key|
-      case params[:key_type]
-      when "starts_with"
-        !key.starts_with?(params[:key_pattern])
-      when "contains"
-        key.index(params[:key_pattern]).nil?
-      else
-        raise "Unknown key_type '#{params[:key_type]}'"
-      end
-    end
-  end
-
-  def filter_by_text_pattern
-    return if params[:text_pattern].blank?
-    @keys.reject! do |key|
-      case params[:text_type]
-      when 'contains'
-        !lookup(@from_locale, key).present? || !lookup(@from_locale, key).to_s.downcase.index(params[:text_pattern].downcase)
-      when 'equals'
-        !lookup(@from_locale, key).present? || lookup(@from_locale, key).to_s.downcase != params[:text_pattern].downcase
-      else
-        raise "Unknown text_type '#{params[:text_type]}'"
-      end
-    end
-  end
-
-  def sort_keys
-    params[:sort_by] ||= "key"
-    case params[:sort_by]
-    when "key"
-      @keys.sort!
-    when "text"
-      @keys.sort! do |key1, key2|
-        if lookup(@from_locale, key1).present? && lookup(@from_locale, key2).present?
-          lookup(@from_locale, key1).to_s.downcase <=> lookup(@from_locale, key2).to_s.downcase
-        elsif lookup(@from_locale, key1).present?
-          -1
-        else
-          1
-        end
-      end
-    else
-      raise "Unknown sort_by '#{params[:sort_by]}'"
-    end
-  end
-
-  def paginate_keys
-    params[:page] ||= 1
-    @paginated_keys = @keys[offset, per_page]
-  end
-
-  def offset
-    (params[:page].to_i - 1) * per_page
-  end
-
-  def per_page
-    50
-  end
-  helper_method :per_page
-
-  def init_translations
-    I18n.backend.send(:init_translations) unless I18n.backend.initialized?
-  end
-
-  def force_init_translations
-    I18n.backend.send(:init_translations)
-  end
 
   def default_locale
     I18n.default_locale
   end
-
-  def set_locale
-    session[:from_locale] ||= default_locale
-    session[:to_locale] ||= :en
-    session[:from_locale] = params[:from_locale] if params[:from_locale].present?
-    session[:to_locale] = params[:to_locale] if params[:to_locale].present?
-    @from_locale = session[:from_locale].to_sym
-    @to_locale = session[:to_locale].to_sym
-  end
-
-  def old_from_text(key)
-    return @old_from_text[key] if @old_from_text && @old_from_text[key]
-    @old_from_text = {}
-    text = key.split(".").inject(log_hash) do |hash, k|
-      hash ? hash[k] : nil
-    end
-    @old_from_text[key] = text
-  end
-  helper_method :old_from_text
-
-  def log_hash
-    @log_hash ||= Translate::Log.new(@from_locale, @to_locale, {}).read
-  end
-
-	def process_array_parameters(parameter)
-		reconstructed_hash = Hash.new
-
-		parameter.each do |key, value|
-			if value.is_a?(String)
-				reconstructed_hash[key] = value
-			elsif value.is_a?(Hash)
-				reconstructed_hash[key] = Translate::Keys.arraylize(value)
-			end
-		end
-		reconstructed_hash
-	end
 end
